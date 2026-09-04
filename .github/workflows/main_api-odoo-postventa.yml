@@ -66,3 +66,23 @@ jobs:
           app-name: 'api-odoo-postventa'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_7283059A556C4A0D893C3CA533E83D5F }}
+
+      # The Odoo instance targeted by this deployment does not have the
+      # `mcp` module installed, so the server cannot reach the
+      # `/mcp/xmlrpc/*` endpoints. Enabling YOLO mode makes it fall back to
+      # the standard `/xmlrpc/2/*` endpoints available on every Odoo
+      # instance. Requires an `AZURE_CREDENTIALS` repository secret
+      # (service principal) so `azure/login` can authenticate before app
+      # settings can be updated. See README.md "Environment Variables" for
+      # details on ODOO_YOLO.
+      - name: 'Set ODOO_YOLO app setting'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: 'Configure App Service settings'
+        uses: azure/appservice-settings@v1
+        with:
+          app-name: 'api-odoo-postventa'
+          slot-name: 'Production'
+          app-settings-json: '[{"name": "ODOO_YOLO", "value": "true", "slotSetting": false}]'

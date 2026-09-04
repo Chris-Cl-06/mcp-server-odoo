@@ -414,6 +414,13 @@ YOLO mode allows the MCP server to connect directly to any standard Odoo instanc
 
 **🚨 WARNING: Never use YOLO mode in production environments!**
 
+> **Note:** The `main_api-odoo-postventa.yml` Azure deployment workflow sets the
+> `ODOO_YOLO=true` app setting because the target Odoo instance does not have
+> the `mcp` module installed, so `/mcp/xmlrpc/*` endpoints are unavailable.
+> With YOLO mode enabled, the server falls back to the standard
+> `/xmlrpc/2/common`, `/xmlrpc/2/db`, and `/xmlrpc/2/object` endpoints
+> present on every Odoo instance.
+
 #### YOLO Mode Levels
 
 1. **Read-Only Mode** (`ODOO_YOLO=read`):
