@@ -243,7 +243,7 @@ jobs:
         repository: much-GmbH/much-mcp-server
         ref: '19.0'
         path: odoo-apps
-        token: ${{ secrets.MCP_MODULE_PAT }}
+        token: ${{ secrets.MCP_MODULE_PAT || github.token }}
 
     - name: Set up Python
       uses: actions/setup-python@v7
