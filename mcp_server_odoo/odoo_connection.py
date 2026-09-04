@@ -27,6 +27,21 @@ logger = logging.getLogger(__name__)
 # and reject them with a clean validation error instead.
 XMLRPC_MAX_INT = 2**31 - 1
 
+
+def _describe_exception(e: BaseException) -> str:
+    """Render an exception for an error message, never as an empty string.
+
+    Some exceptions raised deep in the socket/HTTP/XML-RPC stack (e.g. a
+    ``ConnectionResetError`` with no errno/strerror, or a bare
+    ``http.client`` exception) stringify to ``""``. Surfacing that verbatim
+    produces messages like "Connection test failed: " that hide which
+    exception actually happened, making the real failure (wrong endpoint,
+    TLS issue, DNS, ...) impossible to diagnose from logs alone. Falling
+    back to the exception's class name keeps at least that signal.
+    """
+    message = str(e).strip()
+    return message if message else type(e).__name__
+
 # Keys whose values must never appear in logs. The exact-name set is kept for
 # the handful of names the heuristic deliberately does not flag; anything
 # credential-SHAPED (smtp_pass, webhook_secret, openai_api_key, ...) is caught
@@ -266,7 +281,7 @@ class OdooConnection:
             }
 
         except Exception as e:
-            raise OdooConnectionError(f"Failed to parse URL: {e}") from e
+            raise OdooConnectionError(f"Failed to parse URL: {_describe_exception(e)}") from e
 
     def _build_endpoint_url(self, endpoint: str) -> str:
         """Build full URL for an MCP endpoint.
@@ -327,12 +342,12 @@ class OdooConnection:
         except socket.error as e:
             raise OdooConnectionError(
                 f"Failed to connect to {self._url_components['host']}:"
-                f"{self._url_components['port']}: {e}"
+                f"{self._url_components['port']}: {_describe_exception(e)}"
             ) from e
         except Exception as e:
             if isinstance(e, OdooConnectionError):
                 raise
-            raise OdooConnectionError(f"Connection failed: {e}") from e
+            raise OdooConnectionError(f"Connection failed: {_describe_exception(e)}") from e
 
     def _resolve_and_set_database(self) -> None:
         """Resolve the target database and set it on the transport header.
@@ -374,7 +389,7 @@ class OdooConnection:
             self._server_version = version.get("server_version", "") if version else None
             logger.debug(f"Server version: {version}")
         except Exception as e:
-            raise OdooConnectionError(f"Connection test failed: {e}") from e
+            raise OdooConnectionError(f"Connection test failed: {_describe_exception(e)}") from e
 
     def disconnect(self, suppress_logging: bool = False) -> None:
         """Close connection and cleanup resources."""
@@ -433,7 +448,7 @@ class OdooConnection:
         except socket.timeout:
             return False, f"Health check timeout after {self.timeout} seconds"
         except Exception as e:
-            return False, f"Health check failed: {e}"
+            return False, f"Health check failed: {_describe_exception(e)}"
 
     def test_connection(self) -> bool:
         """Test if connection to Odoo is working.
