@@ -881,6 +881,7 @@ class TestConnectionPersistsAcrossHttpSessions:
     'Not authenticated with Odoo'.
     """
 
+    @contextlib.contextmanager
     def _make_server(self, transport):
         config = OdooConfig(
             url="http://localhost:8069",
@@ -904,59 +905,71 @@ class TestConnectionPersistsAcrossHttpSessions:
 
     @pytest.mark.asyncio
     async def test_http_sessions_reuse_connection_and_registrations(self):
-        gen = self._make_server("streamable-http")
-        server, conn_cls, mock_connection, reg_res, reg_tools = next(gen)
+        with self._make_server("streamable-http") as (
+            server,
+            conn_cls,
+            mock_connection,
+            reg_res,
+            reg_tools,
+        ):
+            # Session 1
+            async with server._odoo_lifespan(server.app):
+                pass
+            # Session 2 (e.g. after a DELETE /mcp) — must NOT disconnect or rebuild
+            async with server._odoo_lifespan(server.app):
+                pass
 
-        # Session 1
-        async with server._odoo_lifespan(server.app):
-            pass
-        # Session 2 (e.g. after a DELETE /mcp) — must NOT disconnect or rebuild
-        async with server._odoo_lifespan(server.app):
-            pass
-
-        mock_connection.disconnect.assert_not_called()
-        assert conn_cls.call_count == 1, "connection must be created exactly once"
-        assert reg_res.call_count == 1, "resources must be registered exactly once"
-        assert reg_tools.call_count == 1, "tools must be registered exactly once"
-        assert server.connection is mock_connection, "connection survives session teardown"
-        assert server.access_controller is not None
+            mock_connection.disconnect.assert_not_called()
+            assert conn_cls.call_count == 1, "connection must be created exactly once"
+            assert reg_res.call_count == 1, "resources must be registered exactly once"
+            assert reg_tools.call_count == 1, "tools must be registered exactly once"
+            assert server.connection is mock_connection, "connection survives session teardown"
+            assert server.access_controller is not None
 
     @pytest.mark.asyncio
     async def test_stdio_still_cleans_up_on_exit(self):
         """stdio has one session per process — cleanup on exit stays correct."""
-        gen = self._make_server("stdio")
-        server, conn_cls, mock_connection, reg_res, reg_tools = next(gen)
+        with self._make_server("stdio") as (
+            server,
+            conn_cls,
+            mock_connection,
+            reg_res,
+            reg_tools,
+        ):
+            async with server._odoo_lifespan(server.app):
+                assert server.connection is mock_connection
 
-        async with server._odoo_lifespan(server.app):
-            assert server.connection is mock_connection
-
-        mock_connection.disconnect.assert_called_once()
-        assert server.connection is None
+            mock_connection.disconnect.assert_called_once()
+            assert server.connection is None
 
     @pytest.mark.asyncio
     async def test_stale_connection_reauthenticated_in_place(self):
         """A connection that lost authentication is reconnected IN PLACE —
         registered handlers hold references to it, so it must never be
         replaced with a new instance."""
-        gen = self._make_server("streamable-http")
-        server, conn_cls, mock_connection, reg_res, reg_tools = next(gen)
+        with self._make_server("streamable-http") as (
+            server,
+            conn_cls,
+            mock_connection,
+            reg_res,
+            reg_tools,
+        ):
+            async with server._odoo_lifespan(server.app):
+                pass
 
-        async with server._odoo_lifespan(server.app):
-            pass
+            # Simulate auth loss between sessions
+            mock_connection.is_authenticated = False
+            mock_connection.is_connected = True
 
-        # Simulate auth loss between sessions
-        mock_connection.is_authenticated = False
-        mock_connection.is_connected = True
+            async with server._odoo_lifespan(server.app):
+                pass
 
-        async with server._odoo_lifespan(server.app):
-            pass
-
-        assert conn_cls.call_count == 1, "must not build a new connection object"
-        mock_connection.authenticate.assert_called()
-        assert server.connection is mock_connection
-        # Reauth re-runs the api-key→password fallback chain — the controller
-        # must track the connection's EFFECTIVE auth method
-        assert server.access_controller.auth_method == mock_connection.auth_method
+            assert conn_cls.call_count == 1, "must not build a new connection object"
+            mock_connection.authenticate.assert_called()
+            assert server.connection is mock_connection
+            # Reauth re-runs the api-key→password fallback chain — the controller
+            # must track the connection's EFFECTIVE auth method
+            assert server.access_controller.auth_method == mock_connection.auth_method
 
     @pytest.mark.asyncio
     async def test_recovery_after_failed_first_startup_registers_handlers(self):
@@ -965,29 +978,33 @@ class TestConnectionPersistsAcrossHttpSessions:
         the AccessController — without it, handler registration silently
         skips and the recovered server serves zero tools while /health
         reports healthy."""
-        gen = self._make_server("streamable-http")
-        server, conn_cls, mock_connection, reg_res, reg_tools = next(gen)
+        with self._make_server("streamable-http") as (
+            server,
+            conn_cls,
+            mock_connection,
+            reg_res,
+            reg_tools,
+        ):
+            # Session 1: Odoo rejects auth — startup fails, half-built connection survives
+            mock_connection.is_authenticated = False
+            mock_connection.authenticate.side_effect = OdooConnectionError("auth failed")
+            with pytest.raises(OdooConnectionError):
+                async with server._odoo_lifespan(server.app):
+                    pass
+            assert server.connection is mock_connection
+            assert server.access_controller is None
 
-        # Session 1: Odoo rejects auth — startup fails, half-built connection survives
-        mock_connection.is_authenticated = False
-        mock_connection.authenticate.side_effect = OdooConnectionError("auth failed")
-        with pytest.raises(OdooConnectionError):
+            # Session 2: Odoo is back — reauth must recover a FULLY working server
+            mock_connection.authenticate.side_effect = None
+            mock_connection.is_connected = True
             async with server._odoo_lifespan(server.app):
                 pass
-        assert server.connection is mock_connection
-        assert server.access_controller is None
 
-        # Session 2: Odoo is back — reauth must recover a FULLY working server
-        mock_connection.authenticate.side_effect = None
-        mock_connection.is_connected = True
-        async with server._odoo_lifespan(server.app):
-            pass
-
-        assert server.access_controller is not None, (
-            "reauth recovery must create the access controller"
-        )
-        assert reg_res.call_count == 1, "resources must register after recovery"
-        assert reg_tools.call_count == 1, "tools must register after recovery"
+            assert server.access_controller is not None, (
+                "reauth recovery must create the access controller"
+            )
+            assert reg_res.call_count == 1, "resources must register after recovery"
+            assert reg_tools.call_count == 1, "tools must register after recovery"
 
 
 class TestTransportSecurity:

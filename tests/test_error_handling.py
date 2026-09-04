@@ -228,6 +228,12 @@ class TestLoggingConfiguration:
                     assert "message" in parsed
 
             # Clean up
+            root_logger = logging.getLogger()
+            for handler in root_logger.handlers[:]:
+                if isinstance(handler, logging.FileHandler):
+                    root_logger.removeHandler(handler)
+                    handler.close()
+            tmp.close()
             os.unlink(tmp.name)
 
     def test_logging_config_from_env(self):
