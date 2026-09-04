@@ -237,14 +237,6 @@ jobs:
     steps:
     - uses: actions/checkout@v7
 
-    - name: Checkout MCP Odoo module
-      uses: actions/checkout@v7
-      with:
-        repository: much-GmbH/much-mcp-server
-        ref: '19.0'
-        path: odoo-apps
-        token: ${{ secrets.MCP_MODULE_PAT || github.token }}
-
     - name: Set up Python
       uses: actions/setup-python@v7
       with:
