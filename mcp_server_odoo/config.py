@@ -153,25 +153,15 @@ class OdooConfig:
         return self.yolo_mode == "true"
 
     def get_endpoint_paths(self) -> Dict[str, str]:
-        """Get appropriate endpoint paths based on mode.
+        """Get standard Odoo XML-RPC endpoint paths.
 
         The DB endpoint always uses the server-wide ``/xmlrpc/db`` path
-        so that database listing works even when multiple databases exist
-        (MCP addon routes require a DB context that isn't available yet).
+        so that database listing works even when multiple databases exist.
 
         Returns:
             Dict[str, str]: Mapping of endpoint names to paths
         """
-        if self.is_yolo_enabled:
-            # Use standard Odoo endpoints in YOLO mode
-            return {"db": "/xmlrpc/db", "common": "/xmlrpc/2/common", "object": "/xmlrpc/2/object"}
-        else:
-            # DB endpoint is always server-wide; common/object use MCP routes
-            return {
-                "db": "/xmlrpc/db",
-                "common": "/mcp/xmlrpc/common",
-                "object": "/mcp/xmlrpc/object",
-            }
+        return {"db": "/xmlrpc/db", "common": "/xmlrpc/2/common", "object": "/xmlrpc/2/object"}
 
     @classmethod
     def from_env(cls, env_file: Optional[Path] = None) -> "OdooConfig":

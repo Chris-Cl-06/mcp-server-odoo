@@ -1,15 +1,8 @@
-"""Odoo XML-RPC connection management.
+"""Odoo XML-RPC connection management."""
 
-This module provides the OdooConnection class for managing connections
-to Odoo via XML-RPC using MCP-specific endpoints.
-"""
-
-import json
 import logging
 import socket
 import threading
-import urllib.error
-import urllib.request
 import xmlrpc.client
 from contextlib import contextmanager, suppress
 from typing import Any, Dict, List, NoReturn, Optional, Tuple, Union
@@ -120,13 +113,6 @@ class OdooValidationFault(OdooConnectionError):  # noqa: N818 — "Fault" mirror
 #   4 = RPC_FAULT_CODE_ACCESS_ERROR     -> AccessError (record rules / ACLs)
 # 3 (ACCESS_DENIED) is deliberately absent: a rejected login is auth setup,
 # not a business rule, and must keep reading as a connection problem.
-# Standard mode goes through the MCP module's own proxy, which re-wraps every
-# exception as faultCode 500 with an "Internal Server Error in
-# MCPObjectController: <message>" envelope. That envelope carries no exception
-# class, so NEITHER the code route nor the string heuristics can classify it:
-# business errors keep reading as connection failures in standard mode until
-# the module preserves Odoo's own fault codes. Fixing that is a module-side
-# change; this classifier is correct for the YOLO transport it can see.
 _ODOO_BUSINESS_FAULT_CODES = frozenset({2, 4})
 
 
@@ -157,8 +143,7 @@ class OdooConnection:
     """Manages XML-RPC connections to Odoo with dynamic endpoint selection.
 
     This class provides connection management, health checking, and
-    proper resource cleanup for Odoo XML-RPC connections. Supports both
-    standard MCP endpoints and YOLO mode with standard Odoo endpoints.
+    proper resource cleanup for standard Odoo XML-RPC endpoints.
     """
 
     # Connection timeout in seconds
@@ -282,15 +267,13 @@ class OdooConnection:
     def connect(self) -> None:
         """Establish connection to Odoo server.
 
-        Creates XML-RPC proxies for MCP endpoints but doesn't
+        Creates XML-RPC proxies but doesn't
         authenticate yet. Proxies are created once and reused for the
         server's lifetime.
 
-        In standard mode, resolves the target database first using the
-        server-wide ``/xmlrpc/db`` endpoint, then sets the
-        ``X-Odoo-Database`` header on the transport so that subsequent
-        requests to MCP addon routes (``/mcp/xmlrpc/*``) are routed to
-        the correct database — required when multiple DBs exist.
+        Resolves the target database first using the server-wide
+        ``/xmlrpc/db`` endpoint, then sets the ``X-Odoo-Database`` header
+        on the transport for subsequent requests.
 
         Raises:
             OdooConnectionError: If connection fails
@@ -303,12 +286,10 @@ class OdooConnection:
             # 1. Create DB proxy first (server-wide /xmlrpc/db — works without DB context)
             self._db_proxy = self._performance_manager.get_optimized_connection(self.DB_ENDPOINT)
 
-            # 2. In standard mode, resolve database and set header before creating
-            #    MCP proxies so multi-DB routing works.
-            if not self.config.is_yolo_enabled:
-                self._resolve_and_set_database()
+            # 2. Resolve database and set header before creating proxies.
+            self._resolve_and_set_database()
 
-            # 3. Create common/object proxies (now with DB header in standard mode)
+            # 3. Create common/object proxies with the database header.
             self._common_proxy = self._performance_manager.get_optimized_connection(
                 self.COMMON_ENDPOINT
             )
@@ -681,7 +662,7 @@ class OdooConnection:
             True if authentication successful, False otherwise
         """
         if not self.config.username:
-            logger.warning("YOLO mode requires username with API key for standard authentication")
+            logger.warning("Standard XML-RPC authentication requires username with an API key")
             return False
 
         try:
@@ -697,88 +678,30 @@ class OdooConnection:
                 self._auth_method = "api_key"
                 self._authenticated = True
                 logger.info(
-                    f"YOLO mode: Authenticated using API key as password for user '{self.config.username}' (UID: {uid})"
+                    f"Authenticated using API key as password for user '{self.config.username}' "
+                    f"(UID: {uid})"
                 )
                 return True
             else:
-                logger.warning(
-                    f"YOLO mode: Authentication failed for user '{self.config.username}'"
-                )
+                logger.warning(f"API-key authentication failed for user '{self.config.username}'")
                 return False
 
         except xmlrpc.client.Fault as e:
             # Handle specific Odoo authentication errors
             fault_string = str(e.faultString).lower()
             if "access denied" in fault_string or "wrong login" in fault_string:
-                logger.warning(f"YOLO mode: Invalid credentials for user '{self.config.username}'")
+                logger.warning(f"Invalid credentials for user '{self.config.username}'")
             else:
-                logger.warning(f"YOLO mode: Authentication error: {e.faultString}")
+                logger.warning(f"API-key authentication error: {e.faultString}")
             return False
         except Exception as e:
-            logger.error(f"YOLO mode: Unexpected authentication error: {e}")
+            logger.error(f"Unexpected API-key authentication error: {e}")
             return False
-
-    def _authenticate_api_key_mcp(self, database: str) -> bool:
-        """Authenticate using API key with MCP REST endpoint (standard mode).
-
-        Args:
-            database: Database name to authenticate against
-
-        Returns:
-            True if authentication successful, False otherwise
-
-        Raises:
-            OdooConnectionError: If API request fails critically
-        """
-        try:
-            # Standard MCP API key validation
-            url = f"{self._url_components['base_url']}/mcp/auth/validate"
-
-            # Create request with API key header
-            req = urllib.request.Request(url)
-            req.add_header("X-API-Key", self.config.api_key)
-            if database:
-                req.add_header("X-Odoo-Database", database)
-
-            # Make the request
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
-
-                if data.get("success") and data.get("data", {}).get("valid"):
-                    self._uid = data["data"].get("user_id")
-                    self._database = database
-                    self._auth_method = "api_key"
-                    self._authenticated = True
-                    logger.info(f"Successfully authenticated with MCP API key (UID: {self._uid})")
-                    return True
-                else:
-                    logger.warning("MCP API key validation failed")
-                    return False
-
-        except urllib.error.HTTPError as e:
-            if e.code == 401:
-                logger.warning("Invalid MCP API key")
-                return False
-            elif e.code == 404:
-                logger.warning("MCP auth endpoint not found (MCP module may not be installed)")
-                return False
-            elif e.code == 429:
-                logger.warning("Rate limit exceeded during MCP API key validation")
-                return False
-            else:
-                logger.error(f"HTTP error during MCP API key validation: {e}")
-                raise OdooConnectionError(f"Failed to validate API key: HTTP {e.code}") from e
-        except urllib.error.URLError as e:
-            logger.error(f"Network error during MCP API key validation: {e}")
-            raise OdooConnectionError(f"Network error during authentication: {e}") from e
-        except Exception as e:
-            logger.error(f"Unexpected error during MCP API key validation: {e}")
-            raise OdooConnectionError(f"Failed to validate API key: {e}") from e
 
     def _authenticate_api_key(self, database: str) -> bool:
         """Authenticate using API key.
 
-        Routes to appropriate authentication method based on mode.
+        Odoo accepts API keys as passwords on its standard XML-RPC endpoint.
 
         Args:
             database: Database name to authenticate against
@@ -792,12 +715,7 @@ class OdooConnection:
         if not self.config.api_key:
             return False
 
-        # In YOLO mode, use standard XML-RPC authentication
-        if self.config.is_yolo_enabled:
-            return self._authenticate_api_key_standard(database)
-        else:
-            # In standard mode, use MCP REST endpoint
-            return self._authenticate_api_key_mcp(database)
+        return self._authenticate_api_key_standard(database)
 
     def _authenticate_password(self, database: str) -> bool:
         """Authenticate using username and password.
@@ -842,9 +760,8 @@ class OdooConnection:
     def authenticate(self, database: Optional[str] = None) -> None:
         """Authenticate with Odoo using available credentials.
 
-        Authentication strategy depends on mode:
-        - Standard mode: Try MCP API key, then fall back to username/password
-        - YOLO mode: Try API key as password, then username/password
+        Authentication tries API key as password, then falls back to
+        username/password.
 
         Args:
             database: Database name. If not provided, uses auto-selection.
@@ -864,12 +781,12 @@ class OdooConnection:
             mode_desc = "read-only" if self.config.yolo_mode == "read" else "full access"
             logger.info(f"Authenticating in YOLO {mode_desc} mode for database '{db_name}'")
         else:
-            logger.info(f"Authenticating in standard MCP mode for database '{db_name}'")
+            logger.info(f"Authenticating in standard mode for database '{db_name}'")
 
         auth_errors = []
 
         if self.config.uses_api_key:
-            auth_method = "API key (YOLO mode)" if self.config.is_yolo_enabled else "MCP API key"
+            auth_method = "API key"
             logger.info(f"Attempting {auth_method} authentication")
 
             try:
@@ -910,10 +827,7 @@ class OdooConnection:
             error_details = "; ".join(auth_errors)
             mode_hint = ""
 
-            if self.config.is_yolo_enabled:
-                mode_hint = " (YOLO mode - ensure Odoo credentials are correct)"
-            else:
-                mode_hint = " (Standard mode - ensure MCP module is installed and API key is valid)"
+            mode_hint = " (ensure Odoo credentials are correct)"
 
             raise OdooConnectionError(f"Authentication failed: {error_details}{mode_hint}")
         else:

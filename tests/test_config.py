@@ -301,15 +301,15 @@ class TestYoloMode:
             )
 
     def test_endpoint_paths_standard_mode(self):
-        """Test endpoint paths in standard mode."""
+        """Test standard Odoo endpoint paths."""
         config = OdooConfig(url="http://localhost:8069", api_key="test", yolo_mode="off")
         paths = config.get_endpoint_paths()
-        assert paths["common"] == "/mcp/xmlrpc/common"
-        assert paths["object"] == "/mcp/xmlrpc/object"
+        assert paths["common"] == "/xmlrpc/2/common"
+        assert paths["object"] == "/xmlrpc/2/object"
         assert paths["db"] == "/xmlrpc/db"
 
     def test_endpoint_paths_yolo_modes(self):
-        """Test endpoint paths in YOLO modes."""
+        """Test standard Odoo endpoint paths in YOLO modes."""
         # Read-only mode
         config = OdooConfig(
             url="http://localhost:8069", username="test", password="test", yolo_mode="read"

@@ -66,3 +66,11 @@ jobs:
           app-name: 'api-odoo-postventa'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_7283059A556C4A0D893C3CA533E83D5F }}
+          startup-command: 'python -m mcp_server_odoo --transport streamable-http --port 8000'
+          app-settings: >-
+            -ODOO_URL https://clustagbotiapostventa.odoo.com
+            -ODOO_DB clustagbotiapostventa
+            -ODOO_USER christopherbolocan@clustag.com
+            -ODOO_YOLO read
+            -ODOO_MCP_TRANSPORT streamable-http
+            -ODOO_MCP_PORT 8000

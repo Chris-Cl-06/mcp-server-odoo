@@ -28,8 +28,8 @@ class TestOdooConnectionCaching:
         config.yolo_mode = "off"
         config.get_endpoint_paths.return_value = {
             "db": "/xmlrpc/db",
-            "common": "/mcp/xmlrpc/common",
-            "object": "/mcp/xmlrpc/object",
+            "common": "/xmlrpc/2/common",
+            "object": "/xmlrpc/2/object",
         }
         return config
 

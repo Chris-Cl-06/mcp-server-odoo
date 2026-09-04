@@ -3,9 +3,7 @@
 This module tests both API key and username/password authentication flows.
 """
 
-import json
 import os
-import urllib.error
 from unittest.mock import MagicMock, Mock, patch
 from xmlrpc.client import Fault
 
@@ -24,6 +22,7 @@ class TestAuthentication:
         return OdooConfig(
             url=os.getenv("ODOO_URL", "http://localhost:8069"),
             api_key="test_api_key",
+            username=os.getenv("ODOO_USER", "admin"),
             database=os.getenv("ODOO_DB"),
         )
 
@@ -68,15 +67,11 @@ class TestAuthentication:
         with pytest.raises(OdooConnectionError, match="Not connected"):
             conn.authenticate()
 
-    @patch("urllib.request.urlopen")
-    def test_api_key_authentication_success(self, mock_urlopen, connection_api_key):
+    def test_api_key_authentication_success(self, connection_api_key):
         """Test successful API key authentication."""
-        # Mock successful API response
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps(
-            {"success": True, "data": {"valid": True, "user_id": 2}}
-        ).encode("utf-8")
-        mock_urlopen.return_value.__enter__.return_value = mock_response
+        mock_common = Mock()
+        mock_common.authenticate.return_value = 2
+        connection_api_key._common_proxy = mock_common
 
         # Authenticate
         connection_api_key.authenticate("mcp")
@@ -86,12 +81,15 @@ class TestAuthentication:
         assert connection_api_key.uid == 2
         assert connection_api_key.database == "mcp"
         assert connection_api_key.auth_method == "api_key"
+        mock_common.authenticate.assert_called_once_with(
+            "mcp", os.getenv("ODOO_USER", "admin"), "test_api_key", {}
+        )
 
-    @patch("urllib.request.urlopen")
-    def test_api_key_authentication_invalid(self, mock_urlopen, connection_api_key):
+    def test_api_key_authentication_invalid(self, connection_api_key):
         """Test API key authentication with invalid key."""
-        # Mock 401 response
-        mock_urlopen.side_effect = urllib.error.HTTPError(None, 401, "Unauthorized", {}, None)
+        mock_common = Mock()
+        mock_common.authenticate.return_value = False
+        connection_api_key._common_proxy = mock_common
 
         # Should raise error since no fallback
         with pytest.raises(OdooConnectionError, match="Authentication failed"):
@@ -149,15 +147,11 @@ class TestAuthentication:
         # Verify not authenticated
         assert not connection_password.is_authenticated
 
-    @patch("urllib.request.urlopen")
-    def test_authentication_fallback(self, mock_urlopen, config_both):
+    def test_authentication_fallback(self, config_both):
         """Test fallback from API key to username/password."""
         # Create connection with both auth methods
         conn = OdooConnection(config_both)
         conn._connected = True
-
-        # Mock failed API key response
-        mock_urlopen.side_effect = urllib.error.HTTPError(None, 401, "Unauthorized", {}, None)
 
         # Mock successful password auth
         mock_common = Mock()
@@ -165,7 +159,8 @@ class TestAuthentication:
         conn._common_proxy = mock_common
 
         # Authenticate - should fallback to password
-        conn.authenticate("mcp")
+        with patch.object(conn, "_authenticate_api_key", return_value=False):
+            conn.authenticate("mcp")
 
         # Verify authenticated with password
         assert conn.is_authenticated
@@ -179,6 +174,7 @@ class TestAuthentication:
         config = OdooConfig(
             url=os.getenv("ODOO_URL", "http://localhost:8069"),
             api_key="test_api_key",
+            username=os.getenv("ODOO_USER", "admin"),
             database=None,
         )
         conn = OdooConnection(config)
@@ -188,18 +184,14 @@ class TestAuthentication:
         mock_db.list.return_value = ["auto_selected_db"]
         conn._db_proxy = mock_db
 
-        # Mock API key auth
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_response = MagicMock()
-            mock_response.read.return_value = json.dumps(
-                {"success": True, "data": {"valid": True, "user_id": 2}}
-            ).encode("utf-8")
-            mock_urlopen.return_value.__enter__.return_value = mock_response
+        mock_common = Mock()
+        mock_common.authenticate.return_value = 2
+        conn._common_proxy = mock_common
 
-            # Authenticate without specifying database
-            conn.authenticate()
+        # Authenticate without specifying database
+        conn.authenticate()
 
-            assert conn.database == "auto_selected_db"
+        assert conn.database == "auto_selected_db"
 
     def test_authentication_state_cleared_on_disconnect(self, connection_api_key):
         """Test authentication state is cleared on disconnect."""
@@ -285,7 +277,7 @@ class TestAuthenticateOrchestration:
             with pytest.raises(OdooConnectionError, match="Authentication failed") as exc_info:
                 conn.authenticate("testdb")
 
-        assert "Standard mode" in str(exc_info.value)
+        assert "ensure Odoo credentials are correct" in str(exc_info.value)
 
     def test_authenticate_with_explicit_database(self):
         """authenticate() with explicit database should not call auto_select_database."""
@@ -446,7 +438,7 @@ class TestYoloModeAuthentication:
         assert conn.OBJECT_ENDPOINT == "/xmlrpc/2/object"
 
     def test_standard_mode_endpoints(self):
-        """Test that standard mode uses MCP endpoints."""
+        """Test that standard mode uses standard Odoo endpoints."""
         config = OdooConfig(
             url=os.getenv("ODOO_URL", "http://localhost:8069"),
             api_key="test_api_key",
@@ -455,10 +447,10 @@ class TestYoloModeAuthentication:
         )
         conn = OdooConnection(config)
 
-        # Check that MCP endpoints are used
+        # Check that standard Odoo endpoints are used
         assert conn.DB_ENDPOINT == "/xmlrpc/db"
-        assert conn.COMMON_ENDPOINT == "/mcp/xmlrpc/common"
-        assert conn.OBJECT_ENDPOINT == "/mcp/xmlrpc/object"
+        assert conn.COMMON_ENDPOINT == "/xmlrpc/2/common"
+        assert conn.OBJECT_ENDPOINT == "/xmlrpc/2/object"
 
     def test_yolo_api_key_auth_success(self, config_yolo_api_key):
         """Test successful API key authentication in YOLO mode."""
@@ -578,27 +570,8 @@ class TestYoloModeAuthentication:
         assert result is False
         assert not conn.is_authenticated
 
-    @patch("urllib.request.urlopen")
-    def test_api_key_mcp_404(self, mock_urlopen):
-        """Test _authenticate_api_key_mcp returns False on HTTP 404."""
-        config = OdooConfig(
-            url=os.getenv("ODOO_URL", "http://localhost:8069"),
-            api_key="test_api_key",
-            database=os.getenv("ODOO_DB"),
-            yolo_mode="off",
-        )
-        conn = OdooConnection(config)
-        conn._connected = True
-
-        mock_urlopen.side_effect = urllib.error.HTTPError(None, 404, "Not Found", {}, None)
-
-        result = conn._authenticate_api_key_mcp("testdb")
-
-        assert result is False
-        assert not conn.is_authenticated
-
     def test_authentication_routing_standard_mode(self):
-        """Test that standard mode routes to MCP authentication."""
+        """Test that standard mode routes to standard Odoo authentication."""
         config = OdooConfig(
             url=os.getenv("ODOO_URL", "http://localhost:8069"),
             api_key="test_api_key",
@@ -608,34 +581,23 @@ class TestYoloModeAuthentication:
         conn = OdooConnection(config)
         conn._connected = True
 
-        # Mock the MCP authentication method
-        with patch.object(conn, "_authenticate_api_key_mcp", return_value=True) as mock_mcp:
-            with patch.object(
-                conn, "_authenticate_api_key_standard", return_value=False
-            ) as mock_std:
-                success = conn._authenticate_api_key("testdb")
+        with patch.object(conn, "_authenticate_api_key_standard", return_value=True) as mock_std:
+            success = conn._authenticate_api_key("testdb")
 
-                # Should call MCP method, not standard
-                mock_mcp.assert_called_once_with("testdb")
-                mock_std.assert_not_called()
-                assert success is True
+        mock_std.assert_called_once_with("testdb")
+        assert success is True
 
     def test_authentication_routing_yolo_mode(self, config_yolo_full):
         """Test that YOLO mode routes to standard authentication."""
         conn = OdooConnection(config_yolo_full)
         conn._connected = True
 
-        # Mock the authentication methods
         with patch.object(conn, "_authenticate_api_key_standard", return_value=True) as mock_std:
-            with patch.object(conn, "_authenticate_api_key_mcp", return_value=False) as mock_mcp:
-                # Use API key config for this test
-                conn.config.api_key = "test_key"
-                success = conn._authenticate_api_key("testdb")
+            conn.config.api_key = "test_key"
+            success = conn._authenticate_api_key("testdb")
 
-                # Should call standard method, not MCP
-                mock_std.assert_called_once_with("testdb")
-                mock_mcp.assert_not_called()
-                assert success is True
+        mock_std.assert_called_once_with("testdb")
+        assert success is True
 
     def test_authentication_fallback_in_standard_mode(self):
         """Test fallback from API key to password in standard mode.
