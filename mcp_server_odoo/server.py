@@ -111,6 +111,7 @@ class OdooMCPServer:
             instructions="MCP server for accessing and managing Odoo ERP data through the Model Context Protocol",
             lifespan=self._odoo_lifespan,
             host=self.config.host,
+            streamable_http_path="/mcp/",
             transport_security=transport_security,
         )
 
