@@ -75,12 +75,12 @@ jobs:
       # (service principal) so `azure/login` can authenticate before app
       # settings can be updated. See README.md "Environment Variables" for
       # details on ODOO_YOLO.
-      - name: 'Set ODOO_YOLO app setting'
+      - name: 'Azure login'
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: 'Configure App Service settings'
+      - name: 'Set ODOO_YOLO app setting'
         uses: azure/appservice-settings@v1
         with:
           app-name: 'api-odoo-postventa'
